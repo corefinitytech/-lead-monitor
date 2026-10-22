@@ -1,0 +1,55 @@
+{
+  "min_score": 3,
+  "max_alerts_per_run": 10,
+  "subreddits": [
+    "forhire",
+    "startups",
+    "SaaS",
+    "SideProject",
+    "EntrepreneurRideAlong",
+    "Entrepreneur",
+    "smallbusiness",
+    "AppIdeas",
+    "hwstartup",
+    "indiehackers"
+  ],
+  "hn_freelancer_thread": true,
+  "hn_queries": [
+    "looking for a developer",
+    "need an app built",
+    "looking for freelance developer",
+    "seeking IoT developer"
+  ],
+  "extra_rss": {},
+  "positive_patterns": [
+    "\\b(looking|searching|seeking|need|needs|want|wanted)\\b[^.\\n]{0,40}\\b(a |an |some |to hire )?(mobile |app |ios |android |flutter |react native |full.?stack |backend |back.end |front.?end |web |iot |embedded |freelance |senior |technical )?(developer|dev|engineer|programmer|agency|cto|co-?founder|freelancer|dev team|development team)\\b",
+    "\\b(need|want|looking to (build|get|have))\\b[^.\\n]{0,30}\\b(an? )?(app|mvp|saas|platform|website|dashboard|portal|backend|prototype)\\b[^.\\n]{0,30}\\b(built|made|developed|created)\\b",
+    "\\bhire (a |an )?(dev|developer|freelancer|engineer|agency|team)\\b",
+    "\\bseeking freelancer\\b",
+    "\\b(build|develop|create)\\b[^.\\n]{0,20}\\b(my|our|an?)\\b[^.\\n]{0,20}\\b(app|mvp|saas|platform|dashboard|portal)\\b[^.\\n]{0,40}\\b(help|someone|developer|team|quote|budget)\\b",
+    "\\b(who can|anyone (who )?can|recommend)\\b[^.\\n]{0,40}\\b(build|develop|make)\\b[^.\\n]{0,30}\\b(app|mvp|software|platform)\\b",
+    "\\bnon-?technical founder\\b"
+  ],
+  "hardware_patterns": [
+    "\\b(iot|bluetooth|\\bble\\b|mqtt|lora|wearable|firmware|embedded|esp32|nrf52|companion app|smart device|connected device|sensor|telemetry|ota update)\\b"
+  ],
+  "negative_patterns": [
+    "\\[\\s*for\\s*hire\\s*\\]",
+    "\\bfor hire\\b",
+    "\\bavailable for (work|hire|projects)\\b",
+    "\\bi am a (freelance )?(developer|designer|engineer)\\b",
+    "\\bmy (portfolio|services|rates)\\b",
+    "\\bunpaid\\b",
+    "\\bequity[- ]only\\b",
+    "\\brev(enue)?[- ]?share only\\b",
+    "\\bhow (do|can|should) (i|we) (find|get|hire)\\b.*\\?",
+    "\\b(for free|no budget|free of charge)\\b"
+  ],
+  "urgency_patterns": [
+    "\\b(urgent(ly)?|asap|immediately|this week|deadline|launch(ing)? (in|next)|need (it|this) (fast|quickly|now))\\b",
+    "\\b(developer|dev|agency|freelancer|team) (ghosted|disappeared|left|quit|let us down|didn'?t deliver)\\b",
+    "\\b(previous|last|old|current) (developer|dev|agency|freelancer)\\b[^.\\n]{0,40}\\b(left|quit|ghosted|failed|disappeared|abandoned|bad)\\b",
+    "\\b(rescue|fix|take ?over|finish|rebuild|rewrite)\\b[^.\\n]{0,30}\\b(app|project|codebase|product|mvp)\\b",
+    "\\b(funded|raised|seed|pre-?seed|investor|kickstarter|crowdfunding)\\b"
+  ]
+}
