@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+seen.json.tmp
+# seen.json is intentionally committed by Actions to preserve deduplication.

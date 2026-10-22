@@ -10,9 +10,11 @@ Usage:
 import json, os, re, sys, time, html, urllib.request, urllib.parse, urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from email.utils import parsedate_to_datetime
+from decimal import Decimal
 
 HERE = Path(__file__).parent
-CONFIG = json.loads((HERE / "config.json").read_text())
+CONFIG = json.loads((HERE / "config.json").read_text(encoding="utf-8"))
 SEEN_FILE = HERE / "seen.json"
 UA = "Mozilla/5.0 (compatible; lead-monitor/1.0)"
 DRY = "--dry-run" in sys.argv
@@ -28,8 +30,20 @@ def get(url, timeout=20):
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < 2:
-                wait = int(e.headers.get("Retry-After", "0") or 0) or 20 * (attempt + 1)
-                time.sleep(min(wait, 45))
+                retry = e.headers.get("Retry-After", "")
+                try:
+                    wait = float(retry)
+                except ValueError:
+                    try:
+                        wait = parsedate_to_datetime(retry).timestamp() - time.time()
+                    except (ValueError, TypeError, OverflowError):
+                        wait = 20 * (attempt + 1)
+                # Do not retry before the server permits, or exhaust the job timeout.
+                if wait > 45:
+                    raise
+                wait = max(7, wait)
+                print(f"RETRY   HTTP 429: waiting {wait:.0f}s (attempt {attempt + 2}/3)", flush=True)
+                time.sleep(wait)
                 continue
             raise
 
@@ -46,13 +60,18 @@ def fetch_reddit(sub):
     root = ET.fromstring(txt)
     out = []
     for e in root.findall("a:entry", ns):
-        link = e.find("a:link", ns)
+        link = next((link for link in e.findall("a:link", ns)
+                     if link.get("rel", "alternate") == "alternate"), None)
+        href = link.get("href", "") if link is not None else ""
+        identity = e.findtext("a:id", "", ns) or href
+        if not identity:
+            raise ValueError("Atom entry has no ID or alternate link")
         out.append({
-            "id": "reddit:" + (e.findtext("a:id", "", ns) or ""),
+            "id": "reddit:" + identity,
             "source": f"r/{sub}",
             "title": e.findtext("a:title", "", ns),
             "text": strip_html(e.findtext("a:content", "", ns)),
-            "url": link.get("href") if link is not None else "",
+            "url": href,
             "author": (e.find("a:author/a:name", ns).text if e.find("a:author/a:name", ns) is not None else ""),
         })
     return out
@@ -60,14 +79,22 @@ def fetch_reddit(sub):
 
 def fetch_hn_freelancer_thread():
     """Latest monthly 'Freelancer? Seeking freelancer?' thread: comments starting SEEKING FREELANCER."""
-    q = urllib.parse.urlencode({"tags": "story,author_whoishiring", "hitsPerPage": 10})
+    q = urllib.parse.urlencode({"query": "Freelancer", "restrictSearchableAttributes": "title",
+                               "tags": "story,author_whoishiring", "hitsPerPage": 10})
     stories = json.loads(get(f"https://hn.algolia.com/api/v1/search_by_date?{q}"))["hits"]
     thread = next((s for s in stories if "freelancer" in (s.get("title") or "").lower()), None)
     if not thread:
-        return []
+        raise ValueError("No HN freelancer thread found")
     sid = thread["objectID"]
-    q = urllib.parse.urlencode({"tags": f"comment,story_{sid}", "hitsPerPage": 200})
-    hits = json.loads(get(f"https://hn.algolia.com/api/v1/search_by_date?{q}"))["hits"]
+    print(f"INFO    HN freelancer thread: {thread.get('title')} (id {sid})")
+    hits, page = [], 0
+    while True:
+        q = urllib.parse.urlencode({"tags": f"comment,story_{sid}", "hitsPerPage": 200, "page": page})
+        result = json.loads(get(f"https://hn.algolia.com/api/v1/search_by_date?{q}"))
+        hits.extend(result["hits"])
+        page += 1
+        if page >= result.get("nbPages", 1):
+            break
     out = []
     for h in hits:
         text = strip_html(h.get("comment_text"))
@@ -80,6 +107,8 @@ def fetch_hn_freelancer_thread():
                 "url": f"https://news.ycombinator.com/item?id={h['objectID']}",
                 "author": h.get("author", ""),
             })
+    print(f"INFO    HN freelancer thread: inspected {len(hits)} comments; "
+          f"{len(out)} SEEKING FREELANCER posts", flush=True)
     return out
 
 
@@ -114,14 +143,21 @@ def fetch_rss(name, url):
             for c in it:
                 if c.tag.split("}")[-1] == n:
                     return c
-        link = f("link")
+        link = next((c for c in it if c.tag.split("}")[-1] == "link"
+                     and c.get("rel", "alternate") == "alternate"), None)
         href = (link.get("href") or link.text) if link is not None else ""
-        t = f("title"); d = f("description") or f("summary") or f("content")
+        t = f("title")
+        d = next((el for n in ("description", "summary", "content")
+                  if (el := f(n)) is not None), None)
+        identity = next((el.text for n in ("guid", "id")
+                         if (el := f(n)) is not None and el.text), None) or href
+        if not identity:
+            raise ValueError("RSS entry has no ID or link")
         out.append({
-            "id": f"rss:{name}:{href}",
+            "id": f"rss:{name}:{identity}",
             "source": name,
             "title": t.text if t is not None else "",
-            "text": strip_html(d.text if d is not None else ""),
+            "text": strip_html(" ".join(d.itertext()) if d is not None else ""),
             "url": href or "",
             "author": "",
         })
@@ -136,7 +172,7 @@ POS = compile_all(CONFIG["positive_patterns"])
 HW = compile_all(CONFIG["hardware_patterns"])
 NEG = compile_all(CONFIG["negative_patterns"])
 URG = compile_all(CONFIG.get("urgency_patterns", []))
-MONEY = re.compile(r"\$\s?(\d[\d,]*)(k)?", re.I)
+MONEY = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.I)
 
 
 def score(post):
@@ -149,7 +185,7 @@ def score(post):
     if pos:
         s += 3 + min(len(pos) - 1, 3)
         why.append(f"ask x{len(pos)}")
-    if re.match(r"\s*\[?\s*hiring", title, re.I):
+    if re.match(r"\s*\[?\s*hiring\b", title, re.I):
         s += 3; why.append("[hiring]")
     hw = [p for p in HW if p.search(blob)]
     if hw:
@@ -157,10 +193,10 @@ def score(post):
     if any(p.search(blob) for p in URG):
         s += 2; why.append("urgent/funded")
     for m in MONEY.finditer(blob):
-        n = int(m.group(1).replace(",", "")) * (1000 if m.group(2) else 1)
+        n = int(Decimal(m.group(1).replace(",", "")) * (1000 if m.group(2) else 1))
         if n >= 500:
             s += 2; why.append(f"budget ${n:,}"); break
-    if not pos and not re.match(r"\s*\[?\s*hiring", title, re.I):
+    if not pos and not re.match(r"\s*\[?\s*hiring\b", title, re.I):
         s = 0   # must contain an actual ask
     return s, why
 
@@ -168,22 +204,34 @@ def score(post):
 # ---------- state + notify ----------
 def load_seen():
     try:
-        return set(json.loads(SEEN_FILE.read_text()))
-    except Exception:
+        data = json.loads(SEEN_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return set()
+    if not isinstance(data, list) or not all(isinstance(x, str) and x for x in data):
+        raise ValueError("seen.json must be an array of nonempty post IDs")
+    return set(data)
 
 
 def save_seen(seen):
-    SEEN_FILE.write_text(json.dumps(sorted(seen)[-5000:]))
+    temporary = SEEN_FILE.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(sorted(seen)) + "\n", encoding="utf-8")
+    temporary.replace(SEEN_FILE)
 
 
 def telegram(text):
     token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat:
-        print("[!] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set; printing instead.")
-        print(text); return
+        raise RuntimeError("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
     data = urllib.parse.urlencode({"chat_id": chat, "text": text, "disable_web_page_preview": "true"}).encode()
-    urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data), timeout=20)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data), timeout=20) as response:
+            if not json.load(response).get("ok"):
+                raise RuntimeError("Telegram rejected sendMessage")
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Telegram sendMessage failed: HTTP {error.code}") from None
+    except Exception:
+        # Exception strings and tracebacks can contain the token-bearing request URL.
+        raise RuntimeError("Telegram sendMessage failed; check credentials and connectivity") from None
 
 
 def fmt(post, s, why):
@@ -214,42 +262,65 @@ def main():
         jobs += [(f"rss {n}", lambda n=n, u=u: fetch_rss(n, u)) for n, u in CONFIG.get("extra_rss", {}).items()]
         for name, fn in jobs:
             try:
-                got = fn(); posts += got; status.append(f"OK      {name}: {len(got)}")
+                got = fn(); posts += got; status.append(f"OK      {name}: {len(got)} (HTTP 200)")
             except urllib.error.HTTPError as e:
                 status.append(f"BLOCKED {name}: HTTP {e.code}")
             except Exception as e:
-                status.append(f"ERROR   {name}: {type(e).__name__}")
+                status.append(f"ERROR   {name}: {type(e).__name__} (no successful HTTP response/parse)")
+            print(status[-1], flush=True)
             time.sleep(7 if name.startswith("r/") else 1.5)
-        print("\n".join(status))
 
     min_score = CONFIG.get("min_score", 5)
     first_run = not SEEN_FILE.exists() and not DRY and not FIXTURE
+    # The same HN item may occur in several searches and in the monthly thread.
+    posts = list({p["id"]: p for p in posts}.values())
     matches = []
     for p in posts:
-        if p["id"] in seen:
+        if p["id"] in seen and not FIXTURE:
             continue
         s, why = score(p)
-        if not FIXTURE:
-            seen.add(p["id"])
         if s >= min_score:
             matches.append((s, p, why))
+        else:
+            seen.add(p["id"])
     matches.sort(key=lambda x: -x[0])
 
-    print(f"{len(posts)} posts fetched, {len(matches)} leads")
-    if first_run:
-        print("First run: saving current posts as already seen (no alerts for old posts).")
-        save_seen(seen); return
-    for s, p, why in matches[: CONFIG.get("max_alerts_per_run", 10)]:
-        if DRY or FIXTURE:
-            print("-" * 60); print(fmt(p, s, why))
-        else:
-            telegram(fmt(p, s, why))
+    print(f"{len(posts)} unique posts fetched, {len(matches)} new leads")
     blocked = [x for x in status if x.startswith(("BLOCKED", "ERROR"))]
-    if blocked and not DRY and not FIXTURE and len(blocked) == len(status) and not os.environ.get("QUIET"):
-        telegram("Lead monitor: every source failed this run.\n" + "\n".join(blocked[:6]))
-    if not DRY and not FIXTURE:
-        save_seen(seen)
+    if status and len(blocked) == len(status):
+        if not DRY and not FIXTURE and not os.environ.get("QUIET"):
+            telegram("Lead monitor: every source failed this run.\n" + "\n".join(blocked))
+        raise RuntimeError("Every source failed; state was not advanced")
+    if first_run:
+        # Send before saving: failed delivery must not silently consume activation.
+        telegram(f"Lead monitor is live. Indexed {len(posts)} current posts; old leads will not alert."
+                 + (f" {len(blocked)} sources failed; see Actions logs." if blocked else ""))
+        save_seen(seen | {p["id"] for p in posts})
+        print("First run: live confirmation sent; current posts saved as seen.")
+        return
+    try:
+        for s, p, why in matches[: CONFIG.get("max_alerts_per_run", 10)]:
+            if DRY or FIXTURE:
+                print("-" * 60); print(fmt(p, s, why))
+            else:
+                telegram(fmt(p, s, why))
+                seen.add(p["id"])
+    finally:
+        # Keep successful deliveries even if a subsequent send fails. Unsent
+        # leads stay eligible on the next run while present in a source feed.
+        if not DRY and not FIXTURE:
+            save_seen(seen)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        # Never print arbitrary exception strings: URLs can contain credentials.
+        detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+        for variable in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+            secret = os.environ.get(variable)
+            if secret:
+                detail = detail.replace(secret, "[REDACTED]")
+        print(f"ERROR   {detail}", file=sys.stderr)
+        sys.exit(1)

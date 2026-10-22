@@ -25,7 +25,7 @@ It checks Reddit and Hacker News every 15 minutes for people asking for a develo
 2. Open the run and read the log. You'll see one line per source:
    - `OK  r/startups: 25` means it works.
    - `BLOCKED r/startups: HTTP 403` means Reddit is blocking GitHub's servers (see below).
-3. The first run saves all current posts as "already seen" and sends nothing. From the second run on, only new posts alert you.
+3. The first run sends one "monitor is live" Telegram message with the number of indexed posts, saves those posts as "already seen", and sends no old lead alerts. From the second run on, only new posts alert you. A failed activation message leaves initialization pending for the next run.
 
 ## If Reddit shows BLOCKED (403)
 Reddit blocks some cloud servers. If that happens:
@@ -45,6 +45,15 @@ Everything is in `config.json`:
 ## Test without sending anything
 - `python monitor.py --fixture` scores sample posts, no internet.
 - `python monitor.py --dry-run` fetches real posts and prints leads without sending or saving.
+- `python -m unittest -v` runs the offline regression checks (standard library only).
+
+## Reliability and troubleshooting
+- Each source logs its HTTP status on success or HTTP failure. Network and parsing failures are logged separately. Partial source failures allow the other sources to continue; total failure fails the run without advancing state.
+- HN searches the title of the latest indexed freelancer thread directly, then reads every page of comments. The thread title/date is logged: the latest thread may be older than the current month.
+- Reddit requests remain seven seconds apart. HTTP 429 is retried up to three attempts, respecting numeric or HTTP-date `Retry-After`. If the requested wait exceeds 45 seconds, that source fails for this run rather than retrying too early.
+- Telegram credentials come only from `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. Missing credentials or failed delivery fail the run; successful deliveries are still saved. Leads above the per-run limit remain eligible while they are still present in the source feeds.
+- `seen.json` is runtime state committed by Actions. Do not delete it unless you want to initialize again. Invalid state fails visibly; IDs are retained to avoid alerting twice on older posts. Avoid running a second local writer alongside Actions.
+- Actions serializes runs, rebases before each push, retries three times, and fails visibly if state cannot be saved. A conflicting manual edit of `seen.json` may still require manual resolution; edits to other files are preserved by the rebase.
 
 ## Rules to follow
 - Reply by hand. Automated replies or DMs break Reddit's and Hacker News's rules and get you banned.

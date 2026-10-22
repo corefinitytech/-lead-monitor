@@ -15,9 +15,12 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -27,14 +30,27 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python monitor.py
       - name: Save seen posts
+        if: ${{ !cancelled() && hashFiles('seen.json') != '' }}
+        shell: bash
         run: |
           git config user.name "lead-monitor"
           git config user.email "lead-monitor@users.noreply.github.com"
           git add seen.json
-          if ! git diff --cached --quiet; then
-            git commit -m "update seen"
-            for i in 1 2 3; do
-              git pull --rebase origin main && git push && break
-              sleep 5
-            done
+          if git diff --cached --quiet; then
+            echo "No seen posts changed; nothing to push."
+            exit 0
           fi
+          git commit -m "update seen"
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push origin HEAD:main; then
+              exit 0
+            fi
+            # A conflicted rebase must not poison the remaining attempts.
+            if test -d "$(git rev-parse --git-path rebase-merge)" || test -d "$(git rev-parse --git-path rebase-apply)"; then
+              git rebase --abort
+            fi
+            echo "Save attempt ${attempt}/3 failed."
+            if test "$attempt" -lt 3; then sleep 5; fi
+          done
+          echo "::error::Unable to save seen posts after 3 attempts."
+          exit 1
