@@ -22,8 +22,16 @@ FIXTURE = "--fixture" in sys.argv
 # ---------- fetching ----------
 def get(url, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                wait = int(e.headers.get("Retry-After", "0") or 0) or 20 * (attempt + 1)
+                time.sleep(min(wait, 45))
+                continue
+            raise
 
 
 def strip_html(s):
@@ -211,7 +219,7 @@ def main():
                 status.append(f"BLOCKED {name}: HTTP {e.code}")
             except Exception as e:
                 status.append(f"ERROR   {name}: {type(e).__name__}")
-            time.sleep(1.5)
+            time.sleep(7 if name.startswith("r/") else 1.5)
         print("\n".join(status))
 
     min_score = CONFIG.get("min_score", 5)
